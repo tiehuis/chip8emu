@@ -2,23 +2,33 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <ncurses.h>
 
-#define SCRWTH 64
-#define SCRHGT 32
-
 #define MEMSIZ 4096
 #define STKSIZ 16
 #define REGCNT 16
-
-#define u8  uint8_t
-#define u16 uint16_t
+#define SCRWTH 64
+#define SCRHGT 32
+#define NUMKEY 16
+#define u8     uint8_t
+#define u16    uint16_t
 
 /* Intepreter globals */
-u8 mem[MEMSIZ] = 
-{ 
+u8  mem[MEMSIZ]    = { 0 };
+u16 stack[STKSIZ]  = { 0 };     /* Memory for stack */
+u8  rV[REGCNT]     = { 0 };     /* General 'V' registers */
+u8  rS = 0;                    /* Special Sound register */
+u8  rT = 0;                    /* Special Timer register */
+u16 rI = 0;                    /* Special 16bit 'I' register */
+u8  sp = 0;                    /* Stack Pointer */
+u16 pc = 0x200;                /* Program Counter */
+
+/* Sprites to load into memory */
+u8 fontset[80] = 
+{
     0xf0, 0x90, 0x90, 0x90, 0xf0, /* 0 */
     0x20, 0x60, 0x20, 0x20, 0x70, /* 1 */
     0xf0, 0x10, 0xf0, 0x80, 0xf0, /* 2 */
@@ -37,20 +47,23 @@ u8 mem[MEMSIZ] =
     0xf0, 0x80, 0xf0, 0x80, 0x80  /* F */
 };
 
-u16 stack[STKSIZ] = { 0 };     /* Memory for stack */
-u8  rV[REGCNT]    = { 0 };     /* General 'V' registers */
-u8  rS = 0;                    /* Special Sound register */
-u8  rT = 0;                    /* Special Timer register */
-u16 rI = 0;                    /* Special 16bit 'I' register */
-u8  sp = 0;                    /* Stack Pointer */
-u16 pc = 0;                    /* Program Counter */
+/* keymap */
+u8 keymap[NUMKEY] =
+{
+    'x', '1', '2', '3',
+    'q', 'w', 'e', 'a',
+    's', 'd', 'z', 'c',
+    '4', 'r', 'f', 'v'
+};
 
 /* ncurses globals */
 WINDOW *win;
 
-#define fatal(msg)\
+#define fatal(msg, op)\
     do {\
-        fprintf(stderr,"fatal: " msg "\n");\
+        endwin();\
+        fprintf(stderr,"fatal: " msg "\n"\
+                "Opcode: 0x%04X\n", op);\
         exit(1);\
     } while (0)
 
@@ -59,7 +72,7 @@ WINDOW *win;
         if (sp < STKSIZ)\
             stack[sp++] = (x);\
         else\
-            fatal("Stack overflow");\
+            fatal("Stack overflow", op);\
     } while (0)
 
 #define stack_pop(x)\
@@ -67,7 +80,7 @@ WINDOW *win;
         if (sp > 0)\
             x = stack[--sp];\
         else\
-            fatal("Stack underflow");\
+            fatal("Stack underflow", op);\
     } while (0)
 
 void update_timer(int signal)
@@ -80,15 +93,15 @@ void update_timer(int signal)
         rS--;
 }
 
-inline u8 random255(void)
+u8 random255(void)
 {
     return rand() & 255;
 }
 
 /* Adjust 16 bit value for appropriate input */
-inline u16 endian(u16 in)
+u16 endian(u16 in)
 {
-    return (*(uint16_t*)"\0\xff" < 0x100) ? in : (in >> 8) & (in << 8);
+    return (*(u16*)"\0\xff" < 0x100) ? in : ((in >> 8) & 0xff) | ((in & 0xff) << 8);
 }
 
 #define ___ 31 /* Wildcard for match fn */
@@ -104,13 +117,14 @@ int match(const u16 val, const int d1, const int d2, const int d3, const int d4)
         return 1;
 }
 
-void parse_and_exec(u8 op)
-{
+void parse_and_exec(u16 op)
 #define mp(a,b,c,d) match(op,a,b,c,d)
+{
 
     /* Chip-8 instructions */
          if (mp( 0x0,0x0,0xe,0x0 )) { /* 00E0 - CLS */
         wclear(win);
+        wrefresh(win);
     }
     else if (mp( 0x0,0x0,0xe,0xe )) { /* 00EE - RET */
         stack_pop(pc);
@@ -130,15 +144,15 @@ void parse_and_exec(u8 op)
     }
     else if (mp( 0x3,___,___,___ )) { /* 3xkk - SE Vx, byte */
         if (rV[(op >> 8) & 0xf] == (op & 0xff))
-            pc++;
+            pc+=2;
     }
     else if (mp( 0x4,___,___,___ )) { /* 4xkk - SNE Vx, byte */
         if (rV[(op >> 8) & 0xf] != (op & 0xff))
-            pc++;
+            pc+=2;
     }
     else if (mp( 0x5,___,___,0x0 )) { /* 5xk0 - SE Vx, Vy */
         if (rV[(op >> 8) & 0xf] == rV[(op >> 4) & 0xf])
-            pc++;
+            pc+=2;
     }
     else if (mp( 0x6,___,___,___ )) { /* 6xkk - LD Vx, byte */
         rV[(op >> 8) & 0xf] = op & 0xff;
@@ -183,7 +197,7 @@ void parse_and_exec(u8 op)
     }
     else if (mp( 0x9,___,___,0x0 )) { /* 9xy0 - SNE Vx, Vy */
         if (rV[(op >> 8) & 0xf] != rV[(op >> 4) & 0xf])
-            pc++;
+            pc+=2;
     }
     else if (mp( 0xa,___,___,___ )) { /* Annn - LD I, addr */
         rI = op & 0xfff;
@@ -204,29 +218,58 @@ void parse_and_exec(u8 op)
         for (i = 0; i < nib; ++i) {
             for (j = 7; j >= 0; --j) {
                 int yy =  y + i;
-                int xx = (x + j) % SCRWTH;
-                if ((mvwinch(win, yy, xx) & A_CHARTEXT) == '*') rV[0xf] = 1;
-                mvwaddch(win, yy, xx, (mem[rI + nib] & (1 << j)) != '*' ? '*' : ' ');
+                int xx = (x + (7 - j)) % SCRWTH;
+                int curchar = mvwinch(win, yy, xx) & A_CHARTEXT;
+                int toggle  = 0;
+
+                if (mem[rI + i] & (1 << j)) {
+                    toggle = 1;
+                    if (curchar == '*')
+                        rV[0xf] = 1;
+                }
+
+                if (toggle)
+                    mvwaddch(win, yy, xx, curchar == '*' ? ' ' : '*');
             }
         }
         wrefresh(win);
     }
     else if (mp( 0xe,___,0x9,0xe )) { /* Ex9E - SKP Vx */
         int ch = getch();
-        if (ch != ERR && ch - '0' == rV[(op >> 8) & 0xf])
-            pc++;
+        if (ch != ERR) {
+            u8 index = rV[(op >> 8) & 0xf];
+            if (index < NUMKEY && ch == keymap[index])
+                pc+=2;
+        }
     }
     else if (mp( 0xe,___,0xa,0x1 )) { /* ExA1 - SKNP Vx */
         int ch = getch();
-        if (ch != ERR && ch - '0' != rV[(op >> 8) & 0xf])
-            pc++;
+        if (ch != ERR) {
+            u8 index = rV[(op >> 8) & 0xf];
+            if (index < NUMKEY && ch == keymap[index])
+                pc+=2;
+        }
     }
     else if (mp( 0xf,___,0x0,0x7 )) { /* Fx07 - LD Vx, DT */
         rV[(op >> 8) & 0xf] = rT;
     }
     else if (mp( 0xf,___,0x0,0xa )) { /* Fx0A - LD Vx, K */
         nodelay(win, FALSE);
-        rV[(op >> 8) & 0xf] = getch();
+
+        /* Check input for valid key from keypress */
+        int i;
+        for (;;) {
+            int ch = getch(); 
+            if (('a' <= ch && ch <= 'f') || ('0' <= ch && ch <= '9')) {
+                for (i = 0; i < NUMKEY; ++i) {
+                    if (ch == keymap[i])
+                        goto found_char;
+                }
+            }
+        }
+
+    found_char:
+        rV[(op >> 8) & 0xf] = i;
         nodelay(win, TRUE);
     }
     else if (mp( 0xf,___,0x1,0x5 )) { /* Fx15 - LD DT, Vx */
@@ -280,13 +323,10 @@ void parse_and_exec(u8 op)
     else if (mp( 0xf,___,0x8,0x5 )) { /* LD Vx, R */
     }
     else {
-        fprintf(stderr, "Opcode %d\n", op);
-        fatal("Invalid opcode");
+        fatal("Invalid opcode", op);
     }
 
-    pc++;   /* Update instruction count */
-
-#undef mp
+    pc+=2;   /* Update instruction count */
 }
 
 int main(int argc, char **argv)
@@ -298,6 +338,7 @@ int main(int argc, char **argv)
 
     srand(time(NULL));
     signal(SIGALRM, update_timer); 
+    memcpy(mem + 0x50, fontset, 80 * sizeof(u8));
 
     /* Init curses */
     initscr();
@@ -307,7 +348,6 @@ int main(int argc, char **argv)
     curs_set(FALSE);
     win = newwin(SCRHGT, SCRWTH, 0, 0);
     nodelay(win, TRUE);
-    wclear(win);
     wrefresh(win);
 
     /* Open file in binary mode */
@@ -324,18 +364,20 @@ int main(int argc, char **argv)
     fseek(fd, 0, SEEK_SET);
 
     /* Ensure have even number of bytes */
-    //if (len & 1) return 1;
-    //len >>= 1;
+    if (len & 1) return 1;
 
     /* Store program in 16 bit array */
-    u8 *buffer = (u8*)malloc(sizeof(u8) * len);
-    fread(buffer, len, sizeof(u8), fd);
+    fread(mem + 0x200, len, sizeof(u8), fd);
     fclose(fd);
 
     /* Continue to exit until we run off edge or encounter exit */
-    ualarm(1000000, 1000000);
-    while (pc < len) parse_and_exec(buffer[pc]);
-
+    //ualarm(1000000, 1000000);
+    for (;;) {
+        parse_and_exec(mem[pc] << 8 | mem[pc + 1]);
+        if (rT > 0) rT--;
+        if (rS > 0) rS--;
+    }
+    
     wclear(win);
     endwin();
     return 0;
