@@ -5,8 +5,8 @@ PROG    = chip8
 
 all: chip8
 
-chip8: src/emulator.c
-	$(CC) -o $(PROG) $(CFLAGS) src/emulator.c $(LIBS)
+chip8: src/chip8.c src/chip8.h
+	$(CC) -o $(PROG) $(CFLAGS) src/chip8.c $(LIBS)
 
 clean:
 	@rm -f $(PROG)

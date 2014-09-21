@@ -6,20 +6,12 @@
 #include <time.h>
 #include <unistd.h>
 #include <ncurses.h>
-
-#define MEMSIZ 4096
-#define STKSIZ 16
-#define REGCNT 16
-#define SCRWTH 64
-#define SCRHGT 32
-#define NUMKEY 16
-#define u8     uint8_t
-#define u16    uint16_t
+#include "chip8.h"
 
 /* Intepreter globals */
 u8  mem[MEMSIZ]    = { 0 };
-u16 stack[STKSIZ]  = { 0 };     /* Memory for stack */
-u8  rV[REGCNT]     = { 0 };     /* General 'V' registers */
+u16 stack[STKSIZ]  = { 0 };    /* Memory for stack */
+u8  rV[REGCNT]     = { 0 };    /* General 'V' registers */
 u8  rS = 0;                    /* Special Sound register */
 u8  rT = 0;                    /* Special Timer register */
 u16 rI = 0;                    /* Special 16bit 'I' register */
@@ -47,7 +39,7 @@ u8 fontset[80] =
     0xf0, 0x80, 0xf0, 0x80, 0x80  /* F */
 };
 
-/* keymap */
+/* Keymap */
 u8 keymap[NUMKEY] =
 {
     'x', '1', '2', '3',
@@ -59,49 +51,30 @@ u8 keymap[NUMKEY] =
 /* ncurses globals */
 WINDOW *win;
 
-#define fatal(msg, op)\
-    do {\
-        endwin();\
-        fprintf(stderr,"fatal: " msg "\n"\
-                "Opcode: 0x%04X\n", op);\
-        exit(1);\
-    } while (0)
-
-#define stack_push(x)\
-    do {\
-        if (sp < STKSIZ)\
-            stack[sp++] = (x);\
-        else\
-            fatal("Stack overflow", op);\
-    } while (0)
-
-#define stack_pop(x)\
-    do {\
-        if (sp > 0)\
-            x = stack[--sp];\
-        else\
-            fatal("Stack underflow", op);\
-    } while (0)
-
 void update_timer(int signal)
 {
     (void)signal;
 
-    if (rT > 0)
+    if (rT > 0) {
         rT--;
-    if (rS > 0)
+    }
+    if (rS > 0) {
+        if (rS == 1)
+            printf("\a");
         rS--;
+    }
 }
 
+
+/* Less-biased random number from 0-255 */
 u8 random255(void)
 {
-    return rand() & 255;
-}
-
-/* Adjust 16 bit value for appropriate input */
-u16 endian(u16 in)
-{
-    return (*(u16*)"\0\xff" < 0x100) ? in : ((in >> 8) & 0xff) | ((in & 0xff) << 8);
+    int x;
+    int r = RAND_MAX & 255;
+    do { 
+        x = rand(); 
+    } while (x >= RAND_MAX - r);
+    return x & 255;
 }
 
 #define ___ 31 /* Wildcard for match fn */
@@ -117,9 +90,10 @@ int match(const u16 val, const int d1, const int d2, const int d3, const int d4)
         return 1;
 }
 
-void parse_and_exec(u16 op)
 #define mp(a,b,c,d) match(op,a,b,c,d)
+void fetch_decode_execute(void)
 {
+    u16 op = mem[pc] << 8 | mem[pc + 1];
 
     /* Chip-8 instructions */
          if (mp( 0x0,0x0,0xe,0x0 )) { /* 00E0 - CLS */
@@ -220,16 +194,12 @@ void parse_and_exec(u16 op)
                 int yy =  y + i;
                 int xx = (x + (7 - j)) % SCRWTH;
                 int curchar = mvwinch(win, yy, xx) & A_CHARTEXT;
-                int toggle  = 0;
 
                 if (mem[rI + i] & (1 << j)) {
-                    toggle = 1;
+                    mvwaddch(win, yy, xx, curchar == '*' ? ' ' : '*');
                     if (curchar == '*')
                         rV[0xf] = 1;
                 }
-
-                if (toggle)
-                    mvwaddch(win, yy, xx, curchar == '*' ? ' ' : '*');
             }
         }
         wrefresh(win);
@@ -338,7 +308,7 @@ int main(int argc, char **argv)
 
     srand(time(NULL));
     signal(SIGALRM, update_timer); 
-    memcpy(mem + 0x50, fontset, 80 * sizeof(u8));
+    memcpy(mem + 80, fontset, 80 * sizeof(u8));
 
     /* Init curses */
     initscr();
@@ -371,12 +341,9 @@ int main(int argc, char **argv)
     fclose(fd);
 
     /* Continue to exit until we run off edge or encounter exit */
-    //ualarm(1000000, 1000000);
-    for (;;) {
-        parse_and_exec(mem[pc] << 8 | mem[pc + 1]);
-        if (rT > 0) rT--;
-        if (rS > 0) rS--;
-    }
+    ualarm(1000000, 1000000);
+    for (;;)
+        fetch_decode_execute();
     
     wclear(win);
     endwin();
