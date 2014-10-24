@@ -40,7 +40,7 @@ u8 fontset[80] =
 };
 
 /* Keymap */
-u8 keymap[NUMKEY] =
+const u8 keymap[NUMKEY] =
 {
     'x', '1', '2', '3',
     'q', 'w', 'e', 'a',
@@ -102,7 +102,6 @@ void fetch_decode_execute(void)
     }
     else if (mp( 0x0,0x0,0xe,0xe )) { /* 00EE - RET */
         stack_pop(pc);
-        return;
     }
     else if (mp( 0x0,___,___,___ )) { /* 0nnn - SYS addr */
         /* nop */
@@ -147,26 +146,23 @@ void fetch_decode_execute(void)
         rV[(op >> 8) & 0xf] ^= rV[(op >> 4) & 0xf];
     }
     else if (mp( 0x8,___,___,0x4 )) { /* 8xy4 - ADD Vx, Vy */
-        u8 tmp = rV[(op >> 8) & 0xf];
+        rV[0xf] = rV[(op >> 4) & 0xf] > (0xff - rV[(op >> 8) & 0xf]) ? 1 : 0;
         rV[(op >> 8) & 0xf] += rV[(op >> 4) & 0xf];
-        rV[0xf] = rV[(op >> 8) & 0xf] < tmp ? 1 : 0;
     }
     else if (mp( 0x8,___,___,0x5 )) { /* 8xy5 - SUB Vx, Vy */
-        u8 tmp = rV[(op >> 8) & 0xf];
+        rV[0xf] = rV[(op >> 4) & 0xf] > rV[(op >> 8) & 0xf] ? 0 : 1;
         rV[(op >> 8) & 0xf] -= rV[(op >> 4) & 0xf];
-        rV[0xf] = rV[(op >> 8) & 0xf] > tmp ? 0 : 1;
     }
     else if (mp( 0x8,___,___,0x6 )) { /* 8xy6 - SHR Vx {, Vy} */
         rV[0xf] = rV[(op >> 8) & 0xf] & 1;
         rV[(op >> 8) & 0xf] >>= 1;
     }
     else if (mp( 0x8,___,___,0x7 )) { /* 8xy7 - SUBN Vx, Vy */
-        u8 tmp = rV[(op >> 8) & 0xf];
+        rV[0xf] = rV[(op >> 8) & 0xf] > rV[(op >> 4) & 0xf] ? 0 : 1;
         rV[(op >> 8) & 0xf] = rV[(op >> 4) & 0xf] - rV[(op >> 8) & 0xf];
-        rV[0xf] = rV[(op >> 8) & 0xf] > tmp ? 0 : 1;
     }
     else if (mp( 0x8,___,___,0xe )) { /* 8xyE - SHL Vx {, Vy} */
-        rV[0xf] = rV[(op >> 8) & 0xf] & 0x80;
+        rV[0xf] = rV[(op >> 8) & 0xf] >> 7;
         rV[(op >> 8) & 0xf] <<= 1;
     }
     else if (mp( 0x9,___,___,0x0 )) { /* 9xy0 - SNE Vx, Vy */
@@ -184,8 +180,8 @@ void fetch_decode_execute(void)
     }
     else if (mp( 0xd,___,___,___ )) { /* Dxyn - DRW Vx, Vy, nibble */
         u8 nib = op & 0xf;
-        u8 x   = (op >> 8) & 0xf;
-        u8 y   = (op >> 4) & 0xf;
+        u8 x   = rV[(op >> 8) & 0xf];
+        u8 y   = rV[(op >> 4) & 0xf];
 
         /* How to display sprite */
         int i, j;
@@ -206,11 +202,9 @@ void fetch_decode_execute(void)
     }
     else if (mp( 0xe,___,0x9,0xe )) { /* Ex9E - SKP Vx */
         int ch = getch();
-        if (ch != ERR) {
-            u8 index = rV[(op >> 8) & 0xf];
-            if (index < NUMKEY && ch == keymap[index])
-                pc+=2;
-        }
+        u8 index = rV[(op >> 8) & 0xf];
+        if (ch == ERR || index > NUMKEY || (index < NUMKEY && ch != keymap[index]))
+            pc+=2;
     }
     else if (mp( 0xe,___,0xa,0x1 )) { /* ExA1 - SKNP Vx */
         int ch = getch();
@@ -249,11 +243,11 @@ void fetch_decode_execute(void)
         rS = rV[(op >> 8) & 0xf];
     }
     else if (mp( 0xf,___,0x1,0xe )) { /* Fx1E - ADD I, Vx */
-        rI += rV[(op >> 8) & 0xf];  /* Check that we don't need to set carry */
+        rV[0xf] = rI + rV[(op >> 8) & 0xf] > 0xfff ? 1 : 0;
+        rI += rV[(op >> 8) & 0xf];
     }
     else if (mp( 0xf,___,0x2,0x9 )) { /* Fx29 - LD F, Vx */
-        /* Set up table */
-        rI = mem[((op >> 8) & 0xf) * 5];
+        rI = mem[(op >> 8) & 0xf] * 5;
     }
     else if (mp( 0xf,___,0x3,0x3 )) { /* Fx33 - LD B, Vx */
         u8 bcd = rV[(op >> 8) & 0xf];
@@ -263,12 +257,12 @@ void fetch_decode_execute(void)
     }
     else if (mp( 0xf,___,0x5,0x5 )) { /* Fx55 - LD [I], Vx */
         int i;
-        for (i = 0; i < ((op >> 8) & 0xf); ++i)
+        for (i = 0; i <= ((op >> 8) & 0xf); ++i)
             mem[rI + i] = rV[i];
     }
     else if (mp( 0xf,___,0x6,0x5 )) { /* Fx65 - LD Vx, [I] */
         int i;
-        for (i = 0; i < ((op >> 8) & 0xf); ++i)
+        for (i = 0; i <= ((op >> 8) & 0xf); ++i)
             rV[i] = mem[rI + i];
     }
     /* Super chip-48 instructions */
@@ -306,9 +300,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Init */
     srand(time(NULL));
     signal(SIGALRM, update_timer); 
-    memcpy(mem + 80, fontset, 80 * sizeof(u8));
+    memmove(mem, fontset, sizeof(fontset));
 
     /* Init curses */
     initscr();
@@ -327,21 +322,22 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Load file into memory */
+    /* Get file length */
     long len;
     fseek(fd, 0, SEEK_END);
     len = ftell(fd);
     fseek(fd, 0, SEEK_SET);
 
-    /* Ensure have even number of bytes */
-    if (len & 1) return 1;
-
-    /* Store program in 16 bit array */
-    fread(mem + 0x200, len, sizeof(u8), fd);
+    /* Load file into ROM memory */
+    if (fread(mem + 0x200, sizeof(u8), len, fd) != len) {
+        perror("Error reading file");
+        fclose(fd);
+        return 1;
+    }
     fclose(fd);
 
+    ualarm(10000, 10000);
     /* Continue to exit until we run off edge or encounter exit */
-    ualarm(1000000, 1000000);
     for (;;)
         fetch_decode_execute();
     
