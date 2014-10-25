@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <unistd.h>
 #include <ncurses.h>
@@ -39,32 +40,37 @@ u8 fontset[80] =
     0xf0, 0x80, 0xf0, 0x80, 0x80  /* F */
 };
 
-/* Keymap */
-const u8 keymap[NUMKEY] =
-{
-    'x', '1', '2', '3',
-    'q', 'w', 'e', 'a',
-    's', 'd', 'z', 'c',
-    '4', 'r', 'f', 'v'
-};
-
 /* ncurses globals */
 WINDOW *win;
 
-void update_timer(int signal)
-{
-    (void)signal;
+#define chip8_init()\
+    do {\
+        srand(time(NULL));\
+        signal(SIGALRM, handler);\
+        memmove(mem, fontset, sizeof(fontset));\
+    } while (0)
 
+#define curses_init()\
+    do {\
+        initscr();\
+        cbreak();\
+        noecho();\
+        curs_set(FALSE);\
+        nodelay(stdscr, TRUE);\
+        win = newwin(SCRHGT, SCRWTH, 0, 0);\
+        wrefresh(win);\
+    } while (0)
+
+void handler(int signo)
+{
+    /* Update timers */
     if (rT > 0) {
         rT--;
     }
     if (rS > 0) {
-        if (rS == 1)
-            printf("\a");
         rS--;
     }
 }
-
 
 /* Less-biased random number from 0-255 */
 u8 random255(void)
@@ -75,6 +81,30 @@ u8 random255(void)
         x = rand(); 
     } while (x >= RAND_MAX - r);
     return x & 255;
+}
+
+/* Return -1 on invalid key, otherwise the keyvalue */
+int decode_key(int ch)
+{
+    switch (toupper(ch)) {
+        case '1': return 0x1;
+        case '2': return 0x2;
+        case '3': return 0x3;
+        case '4': return 0xc;
+        case 'Q': return 0x4;
+        case 'W': return 0x5;
+        case 'E': return 0x6;
+        case 'R': return 0xd;
+        case 'A': return 0x7;
+        case 'S': return 0x8;
+        case 'D': return 0x9;
+        case 'F': return 0xe;
+        case 'Z': return 0xa;
+        case 'X': return 0x0;
+        case 'C': return 0xb;
+        case 'V': return 0xf;
+         default: return -1;
+    }
 }
 
 #define ___ 31 /* Wildcard for match fn */
@@ -93,7 +123,7 @@ int match(const u16 val, const int d1, const int d2, const int d3, const int d4)
 #define mp(a,b,c,d) match(op,a,b,c,d)
 void fetch_decode_execute(void)
 {
-    u16 op = mem[pc] << 8 | mem[pc + 1];
+    const u16 op = mem[pc] << 8 | mem[pc + 1];
 
     /* Chip-8 instructions */
          if (mp( 0x0,0x0,0xe,0x0 )) { /* 00E0 - CLS */
@@ -186,12 +216,12 @@ void fetch_decode_execute(void)
         /* How to display sprite */
         int i, j;
         for (i = 0; i < nib; ++i) {
-            for (j = 7; j >= 0; --j) {
-                int yy =  y + i;
-                int xx = (x + (7 - j)) % SCRWTH;
-                int curchar = mvwinch(win, yy, xx) & A_CHARTEXT;
+            for (j = 0; j < 8; ++j) {
+                const int yy =  y + i;
+                const int xx = (x + j) % SCRWTH;
+                const int curchar = mvwinch(win, yy, xx) & A_CHARTEXT;
 
-                if (mem[rI + i] & (1 << j)) {
+                if (mem[rI + i] & (0x80 >> j)) {
                     mvwaddch(win, yy, xx, curchar == '*' ? ' ' : '*');
                     if (curchar == '*')
                         rV[0xf] = 1;
@@ -201,40 +231,30 @@ void fetch_decode_execute(void)
         wrefresh(win);
     }
     else if (mp( 0xe,___,0x9,0xe )) { /* Ex9E - SKP Vx */
-        int ch = getch();
+        const int ch = getch();
         u8 index = rV[(op >> 8) & 0xf];
-        if (ch == ERR || index > NUMKEY || (index < NUMKEY && ch != keymap[index]))
+        if (ch != ERR && decode_key(ch) == index)
             pc+=2;
     }
     else if (mp( 0xe,___,0xa,0x1 )) { /* ExA1 - SKNP Vx */
-        int ch = getch();
-        if (ch != ERR) {
-            u8 index = rV[(op >> 8) & 0xf];
-            if (index < NUMKEY && ch == keymap[index])
-                pc+=2;
-        }
+        const int ch = getch();
+        u8 index = rV[(op >> 8) & 0xf];
+        if (ch == ERR || decode_key(ch) != index)
+            pc+=2;
     }
     else if (mp( 0xf,___,0x0,0x7 )) { /* Fx07 - LD Vx, DT */
         rV[(op >> 8) & 0xf] = rT;
     }
     else if (mp( 0xf,___,0x0,0xa )) { /* Fx0A - LD Vx, K */
-        nodelay(win, FALSE);
+        nodelay(stdscr, FALSE);
 
-        /* Check input for valid key from keypress */
-        int i;
-        for (;;) {
-            int ch = getch(); 
-            if (('a' <= ch && ch <= 'f') || ('0' <= ch && ch <= '9')) {
-                for (i = 0; i < NUMKEY; ++i) {
-                    if (ch == keymap[i])
-                        goto found_char;
-                }
-            }
-        }
+        int ch;
+        do {
+            ch = decode_key(getch());
+        } while (ch == -1);
 
-    found_char:
-        rV[(op >> 8) & 0xf] = i;
-        nodelay(win, TRUE);
+        rV[(op >> 8) & 0xf] = ch;
+        nodelay(stdscr, TRUE);
     }
     else if (mp( 0xf,___,0x1,0x5 )) { /* Fx15 - LD DT, Vx */
         rT = rV[(op >> 8) & 0xf];
@@ -300,20 +320,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Init */
-    srand(time(NULL));
-    signal(SIGALRM, update_timer); 
-    memmove(mem, fontset, sizeof(fontset));
-
-    /* Init curses */
-    initscr();
-    cbreak();
-    noecho();
-    nonl();
-    curs_set(FALSE);
-    win = newwin(SCRHGT, SCRWTH, 0, 0);
-    nodelay(win, TRUE);
-    wrefresh(win);
+    chip8_init();
+    curses_init();
 
     /* Open file in binary mode */
     FILE *fd = fopen(argv[1], "rb");
@@ -336,9 +344,8 @@ int main(int argc, char **argv)
     }
     fclose(fd);
 
-    ualarm(10000, 10000);
-    /* Continue to exit until we run off edge or encounter exit */
-    for (;;)
+    ualarm(52*1000, 52*1000); /* 52ms per */
+    while (pc < 0x200 + len)
         fetch_decode_execute();
     
     wclear(win);
